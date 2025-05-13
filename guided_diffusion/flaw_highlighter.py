@@ -13,13 +13,13 @@ class FlawHighlighter(nn.Module):
         self.feature_map_size = input_image_size // (2 ** 5)
         self.flatten = nn.Flatten()
         self.fc1 = nn.Linear(512 * self.feature_map_size * self.feature_map_size, params['ndf'] * 16)
-        self.fc2 = nn.Linear(params['ndf'] * 16, 1)
-        self.sigmoid = nn.Sigmoid()
+        self.fc2 = nn.Linear(params['ndf'] * 16, 2)
+        self.softmax = nn.Softmax(dim=1)
 
     def forward(self, x):
         x = self.features(x)
         x = self.flatten(x)
         x = F.relu(self.fc1(x))
         x = self.fc2(x)
-        out = self.sigmoid(x)
-        return out
+        x = self.softmax(x)
+        return x
