@@ -2,3 +2,6 @@ blobfile
 mpi4py
 wandb
 tqdm
+grad-cam
+pytorch-fid
+einops
