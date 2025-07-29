@@ -199,8 +199,9 @@ class GaussianDiffusion:
         if noise is None:
             noise = th.randn_like(x_start)
 
+        # self-refining forward process 
         if fam is not None:
-            noise = noise * (1.0 + fam_noise_w * fam)
+            noise = noise * (1.0 + fam_noise_w * fam) # noise amplification
 
         return (
             _extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start

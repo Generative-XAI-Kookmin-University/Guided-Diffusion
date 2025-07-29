@@ -420,6 +420,7 @@ class QKVAttention(nn.Module):
         q, k, v = qkv.chunk(3, dim=1)
         scale = 1 / math.sqrt(math.sqrt(ch))
 
+        # self-refining reverse process (attention modulation)
         if fam is not None:
             fam = fam.unsqueeze(0).unsqueeze(0)
 

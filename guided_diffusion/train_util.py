@@ -171,15 +171,6 @@ class TrainLoop:
             self.opt.load_state_dict(state_dict)
 
     def generate_fam(self):
-        #!
-        # import cv2
-        # import numpy as np
-        # from pathlib import Path
-        # import torchvision.utils as vutils
-        # save_dir = Path(os.path.join(logger.get_dir(), "fam_results"))
-        # if dist.get_rank() == 0:
-        #     os.makedirs(save_dir, exist_ok=True)
-        #!
 
         if len(self.ema_params) > 0:
             ema_rate = self.ema_rate[-1]
@@ -232,13 +223,7 @@ class TrainLoop:
             del ema_model
         else:
             self.model.train()
-        #!
-        # if dist.get_rank() == 0:
-        #     grid_img = vutils.make_grid(generated_images, nrow=int(self.batch_size**0.5), padding=2, normalize=False)
-        #     grid_path = os.path.join(save_dir, f"samples_step_{self.step}.png")
-        #     vutils.save_image(grid_img, grid_path)
-        #     logger.log(f"Saved generated images to {grid_path}")
-        #!
+
 
         flaw_maps = []
         for idx, img in enumerate(generated_images):
@@ -259,27 +244,6 @@ class TrainLoop:
             
             flaw_maps.append(th.tensor(grayscale_cam_img).to(device))
 
-            #!
-            # if dist.get_rank() == 0 and idx < 5:
-
-            #     img_path = os.path.join(save_dir, f"sample_{self.step}_{idx}.png")
-            #     vutils.save_image(img, img_path)
-                
-            #     heatmap = cv2.applyColorMap(np.uint8(255 * grayscale_cam_img), cv2.COLORMAP_JET)
-            #     fam_path = os.path.join(save_dir, f"fam_{self.step}_{idx}.png")
-            #     cv2.imwrite(fam_path, heatmap)
-
-            #     img_np = img.cpu().permute(1, 2, 0).numpy() * 255
-            #     img_np = img_np.astype(np.uint8)
-            #     img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-
-            #     heatmap = cv2.resize(heatmap, (img_np.shape[1], img_np.shape[0]))
-
-            #     overlay = cv2.addWeighted(img_np, 0.6, heatmap, 0.4, 0)
-            #     overlay_path = os.path.join(save_dir, f"overlay_{self.step}_{idx}.png")
-            #     cv2.imwrite(overlay_path, overlay)
-            #!
-
         fam = th.mean(th.stack(flaw_maps), dim=0)
 
         return fam
@@ -291,12 +255,14 @@ class TrainLoop:
                 desc="Training", dynamic_ncols=True) as pbar:
             while self.step + self.resume_step < self.num_iterations:
                 batch, cond = next(self.data)
-        
+
+                # base phase
                 if self.step + self.resume_step < self.first_process:
                     self.run_step(batch, cond)
+                # refinement phase
                 else:
-                    if (self.step + self.resume_step) % self.fam_cycle == 0:
-                        self.current_fam = self.generate_fam()
+                    if (self.step + self.resume_step) % self.fam_cycle == 0: # cycle
+                        self.current_fam = self.generate_fam() # flaw activation map generation
 
                     self.run_step(batch, cond, self.current_fam, self.fam_noise_w, self.fam_attn_w)
 
