@@ -185,7 +185,7 @@ class GaussianDiffusion:
         )
         return mean, variance, log_variance
 
-    def q_sample(self, x_start, t, noise=None):
+    def q_sample(self, x_start, t, noise=None, fam=None, fam_noise_w=0.01):
         """
         Diffuse the data for a given number of diffusion steps.
 
@@ -198,7 +198,11 @@ class GaussianDiffusion:
         """
         if noise is None:
             noise = th.randn_like(x_start)
-        assert noise.shape == x_start.shape
+
+        # self-refining forward process 
+        if fam is not None:
+            noise = noise * (1.0 + fam_noise_w * fam) # noise amplification
+
         return (
             _extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
             + _extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape)
@@ -741,7 +745,7 @@ class GaussianDiffusion:
         output = th.where((t == 0), decoder_nll, kl)
         return {"output": output, "pred_xstart": out["pred_xstart"]}
 
-    def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
+    def training_losses(self, model, x_start, t, model_kwargs=None, noise=None, fam=None, fam_noise_w=0.01, fam_attn_w=0.025):
         """
         Compute training losses for a single timestep.
 
@@ -758,7 +762,12 @@ class GaussianDiffusion:
             model_kwargs = {}
         if noise is None:
             noise = th.randn_like(x_start)
-        x_t = self.q_sample(x_start, t, noise=noise)
+
+        if fam is not None:
+            model_kwargs["fam"] = fam
+            model_kwargs["fam_attn_w"] = fam_attn_w
+
+        x_t = self.q_sample(x_start, t, noise=noise, fam=fam, fam_noise_w=fam_noise_w)
 
         terms = {}
 

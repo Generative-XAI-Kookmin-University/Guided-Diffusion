@@ -1,7 +1,7 @@
 """
 Train a diffusion model on images.
 """
-
+import torch
 import argparse
 import datetime
 
@@ -15,6 +15,7 @@ from guided_diffusion.script_util import (
     add_dict_to_argparser,
 )
 from guided_diffusion.train_util import TrainLoop
+from guided_diffusion.flaw_highlighter import FlawHighlighter
 import wandb
 
 
@@ -33,6 +34,16 @@ def main():
     )
     model.to(dist_util.dev())
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
+
+    params = {
+    'nc' : 3,
+    'ndf' : 32, 
+    }
+    flaw_highlighter = FlawHighlighter(params)
+    if args.fh_ckpt_path:
+        print('loading flaw highlighter checkpoint...')
+        fh_ckpt = torch.load(args.fh_ckpt_path)
+        flaw_highlighter.load_state_dict(fh_ckpt['model_state_dict'])
 
     logger.log("creating data loader...")
     data = load_data(
@@ -59,6 +70,12 @@ def main():
         schedule_sampler=schedule_sampler,
         weight_decay=args.weight_decay,
         lr_anneal_steps=args.lr_anneal_steps,
+        image_size=args.image_size,
+        first_process=args.first_process,
+        FH = flaw_highlighter,
+        fam_cycle = args.fam_cycle,
+        fam_noise_w=args.fam_noise_w,
+        fam_attn_w=args.fam_attn_w
     ).run_loop(num_iterations=args.num_iterations)
 
 
@@ -77,7 +94,12 @@ def create_argparser():
         resume_checkpoint="",
         use_fp16=False,
         fp16_scale_growth=1e-3,
-        num_iterations=500000
+        num_iterations=500000,
+        first_process=250000,
+        fam_cycle=100,
+        fam_noise_w=0.01,
+        fam_attn_w=0.025,
+        fh_ckpt_path='./ckpt/FH_best_9.pth'
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

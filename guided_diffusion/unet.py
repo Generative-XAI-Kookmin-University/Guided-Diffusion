@@ -293,14 +293,36 @@ class AttentionBlock(nn.Module):
 
         self.proj_out = zero_module(conv_nd(1, channels, channels, 1))
 
-    def forward(self, x):
-        return checkpoint(self._forward, (x,), self.parameters(), True)
+    # def forward(self, x, fam=None, fam_attn_w=0.025):
+    #     return checkpoint(self._forward, (x, fam, fam_attn_w), self.parameters(), True)
+    
+    def forward(self, x, fam=None, fam_attn_w=0.025):
+        if fam is None:
+            return checkpoint(self._forward_original, (x,), self.parameters(), self.use_checkpoint)
+        else:
+            return self._forward_with_fam(x, fam, fam_attn_w)
 
-    def _forward(self, x):
+    def _forward_original(self, x):
         b, c, *spatial = x.shape
         x = x.reshape(b, c, -1)
         qkv = self.qkv(self.norm(x))
         h = self.attention(qkv)
+        h = self.proj_out(h)
+        return (x + h).reshape(b, c, *spatial)
+    
+    def _forward_with_fam(self, x, fam, fam_attn_w):
+        b, c, *spatial = x.shape
+        x_flat = x.reshape(b, c, -1)
+        qkv = self.qkv(self.norm(x_flat))
+        h = self.attention(qkv, fam, fam_attn_w)
+        h = self.proj_out(h)
+        return (x_flat + h).reshape(b, c, *spatial)
+
+    def _forward(self, x, fam=None, fam_attn_w=0.025):
+        b, c, *spatial = x.shape
+        x = x.reshape(b, c, -1)
+        qkv = self.qkv(self.norm(x))
+        h = self.attention(qkv, fam, fam_attn_w)
         h = self.proj_out(h)
         return (x + h).reshape(b, c, *spatial)
 
@@ -334,7 +356,7 @@ class QKVAttentionLegacy(nn.Module):
         super().__init__()
         self.n_heads = n_heads
 
-    def forward(self, qkv):
+    def forward(self, qkv, fam=None, fam_attn_w=0.025):
         """
         Apply QKV attention.
 
@@ -346,6 +368,24 @@ class QKVAttentionLegacy(nn.Module):
         ch = width // (3 * self.n_heads)
         q, k, v = qkv.reshape(bs * self.n_heads, ch * 3, length).split(ch, dim=1)
         scale = 1 / math.sqrt(math.sqrt(ch))
+
+        if fam is not None:
+            fam = fam.unsqueeze(0).unsqueeze(0)
+
+            spatial_size = int(math.sqrt(length))
+            if fam.shape[2] != spatial_size or fam.shape[3] != spatial_size:
+                fam = th.nn.functional.interpolate(
+                    fam, size=(spatial_size, spatial_size), mode='bilinear'
+                )
+            fam = fam.expand(bs, -1, -1, -1)
+            fam_flat = fam.reshape(bs, 1, -1)
+
+            fam_expanded = fam_flat.expand(bs, self.n_heads, length)
+            fam_expanded = fam_expanded.reshape(bs * self.n_heads, 1, length)
+            
+            k = k * (1.0 + fam_attn_w * fam_expanded)
+            v = v * (1.0 + fam_attn_w * fam_expanded)
+
         weight = th.einsum(
             "bct,bcs->bts", q * scale, k * scale
         )  # More stable with f16 than dividing afterwards
@@ -367,7 +407,7 @@ class QKVAttention(nn.Module):
         super().__init__()
         self.n_heads = n_heads
 
-    def forward(self, qkv):
+    def forward(self, qkv, fam=None, fam_attn_w=0.025):
         """
         Apply QKV attention.
 
@@ -379,6 +419,25 @@ class QKVAttention(nn.Module):
         ch = width // (3 * self.n_heads)
         q, k, v = qkv.chunk(3, dim=1)
         scale = 1 / math.sqrt(math.sqrt(ch))
+
+        # self-refining reverse process (attention modulation)
+        if fam is not None:
+            fam = fam.unsqueeze(0).unsqueeze(0)
+
+            spatial_size = int(math.sqrt(length))
+            if fam.shape[2] != spatial_size or fam.shape[3] != spatial_size:
+                fam = th.nn.functional.interpolate(
+                    fam, size=(spatial_size, spatial_size), mode='bilinear'
+                )
+
+            fam = fam.expand(bs, -1, -1, -1)
+
+            fam_flat = fam.reshape(bs, 1, -1)
+            fam_reshaped = fam_flat.expand(-1, width // 3, -1)
+            
+            k = k * (1.0 + fam_attn_w * fam_reshaped)
+            v = v * (1.0 + fam_attn_w * fam_reshaped)
+
         weight = th.einsum(
             "bct,bcs->bts",
             (q * scale).view(bs * self.n_heads, ch, length),
@@ -631,7 +690,7 @@ class UNetModel(nn.Module):
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
 
-    def forward(self, x, timesteps, y=None):
+    def forward(self, x, timesteps, y=None, fam=None, fam_attn_w=0.025):
         """
         Apply the model to an input batch.
 
@@ -652,14 +711,46 @@ class UNetModel(nn.Module):
             emb = emb + self.label_emb(y)
 
         h = x.type(self.dtype)
-        for module in self.input_blocks:
-            h = module(h, emb)
+
+        for i, module in enumerate(self.input_blocks):
+            if isinstance(module, TimestepEmbedSequential):
+                for layer in module:
+                    if isinstance(layer, AttentionBlock) and fam is not None:
+                        h = layer(h, fam, fam_attn_w)
+                    elif isinstance(layer, TimestepBlock):
+                        h = layer(h, emb)
+                    else:
+                        h = layer(h)
+            else:
+                h = module(h, emb)
             hs.append(h)
-        h = self.middle_block(h, emb)
-        for module in self.output_blocks:
+
+        if isinstance(self.middle_block, TimestepEmbedSequential):
+            for layer in self.middle_block:
+                if isinstance(layer, AttentionBlock) and fam is not None:
+                    h = layer(h, fam, fam_attn_w)
+                elif isinstance(layer, TimestepBlock):
+                    h = layer(h, emb)
+                else:
+                    h = layer(h)
+        else:
+            h = self.middle_block(h, emb)
+
+        for i, module in enumerate(self.output_blocks):
             h = th.cat([h, hs.pop()], dim=1)
-            h = module(h, emb)
+            if isinstance(module, TimestepEmbedSequential):
+                for layer in module:
+                    if isinstance(layer, AttentionBlock) and fam is not None:
+                        h = layer(h, fam, fam_attn_w)
+                    elif isinstance(layer, TimestepBlock):
+                        h = layer(h, emb)
+                    else:
+                        h = layer(h)
+            else:
+                h = module(h, emb)
+
         h = h.type(x.dtype)
+
         return self.out(h)
 
 
