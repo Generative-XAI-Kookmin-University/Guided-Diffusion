@@ -355,6 +355,14 @@ class QKVAttentionLegacy(nn.Module):
     def __init__(self, n_heads):
         super().__init__()
         self.n_heads = n_heads
+        
+        self.fam_proj = nn.Sequential(
+            nn.Conv2d(1, 8, kernel_size=3, padding=1), 
+            nn.ReLU(inplace=True),
+            nn.Conv2d(8, 8, kernel_size=3, padding=1), 
+            nn.ReLU(inplace=True),
+            nn.Conv2d(8, 1, kernel_size=1), 
+        )
 
     def forward(self, qkv, fam=None, fam_attn_w=0.025):
         """
@@ -371,6 +379,7 @@ class QKVAttentionLegacy(nn.Module):
 
         if fam is not None:
             fam = fam.unsqueeze(0).unsqueeze(0)
+            fam = self.fam_proj(fam)
 
             spatial_size = int(math.sqrt(length))
             if fam.shape[2] != spatial_size or fam.shape[3] != spatial_size:
@@ -406,6 +415,7 @@ class QKVAttention(nn.Module):
     def __init__(self, n_heads):
         super().__init__()
         self.n_heads = n_heads
+        self.fam_proj = nn.Conv2d(1, 1, kernel_size=1)
 
     def forward(self, qkv, fam=None, fam_attn_w=0.025):
         """
@@ -423,6 +433,7 @@ class QKVAttention(nn.Module):
         # self-refining reverse process (attention modulation)
         if fam is not None:
             fam = fam.unsqueeze(0).unsqueeze(0)
+            fam = self.fam_proj(fam)
 
             spatial_size = int(math.sqrt(length))
             if fam.shape[2] != spatial_size or fam.shape[3] != spatial_size:
